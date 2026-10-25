@@ -90,12 +90,13 @@ Connect to the instance and install Java 21 and Jenkins LTS from the official
 Jenkins Debian package repository:
 
 ```sh
+set -e
 sudo apt-get update
-sudo apt-get install -y fontconfig openjdk-21-jre wget
+sudo apt-get install -y ca-certificates curl fontconfig openjdk-21-jre
 java -version
 
 sudo install -d -m 0755 /etc/apt/keyrings
-sudo wget -O /etc/apt/keyrings/jenkins-keyring.asc \
+sudo curl -fsSLo /etc/apt/keyrings/jenkins-keyring.asc \
   https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
 echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" \
   | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
@@ -105,6 +106,49 @@ sudo apt-get install -y jenkins
 sudo systemctl enable --now jenkins
 sudo systemctl status jenkins --no-pager
 ```
+
+`set -e` stops this block at the first failed command. Do not continue to the
+`systemctl` commands unless `apt-get install jenkins` succeeds.
+
+If APT reports **“Package 'jenkins' has no installation candidate”**, the
+Jenkins package repository was not successfully added or its package index was
+not downloaded. The later **“jenkins.service could not be found”** message is
+expected because the package was never installed. Repair and verify the APT
+repository before trying to start the service:
+
+```sh
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl fontconfig openjdk-21-jre
+
+sudo install -d -m 0755 /etc/apt/keyrings
+sudo curl -fsSLo /etc/apt/keyrings/jenkins-keyring.asc \
+  https://pkg.jenkins.io/debian-stable/jenkins.io-2023.key
+sudo chmod 0644 /etc/apt/keyrings/jenkins-keyring.asc
+echo "deb [signed-by=/etc/apt/keyrings/jenkins-keyring.asc] https://pkg.jenkins.io/debian-stable binary/" \
+  | sudo tee /etc/apt/sources.list.d/jenkins.list > /dev/null
+
+sudo apt-get update
+apt-cache policy jenkins
+sudo apt-get install -y jenkins
+sudo systemctl enable --now jenkins
+sudo systemctl status jenkins --no-pager
+```
+
+Before the install step, `apt-cache policy jenkins` should show a **Candidate**
+version. If it says `Candidate: (none)`, inspect the preceding
+`sudo apt-get update` output for errors:
+
+```sh
+cat /etc/os-release
+cat /etc/apt/sources.list.d/jenkins.list
+ls -l /etc/apt/keyrings/jenkins-keyring.asc
+sudo apt-get update
+```
+
+Resolve any repository/key errors, DNS or outbound HTTPS restrictions, or
+incorrect source-list contents, then rerun `apt-cache policy jenkins`. Do not
+try to start the service while there is no install candidate. Once APT shows a
+candidate and installation succeeds, `systemctl` should find `jenkins.service`.
 
 If the service does not start, inspect its service log:
 

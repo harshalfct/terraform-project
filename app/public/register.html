@@ -1,0 +1,63 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Create an account</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 32rem; margin: 4rem auto; padding: 0 1.25rem; line-height: 1.6; }
+      main { border: 1px solid #8886; border-radius: 1rem; padding: 2rem; }
+      label { display: block; margin-top: 1rem; font-weight: 600; }
+      input { box-sizing: border-box; width: 100%; margin-top: .35rem; padding: .7rem; font: inherit; }
+      button { margin-top: 1.25rem; padding: .7rem 1rem; font: inherit; cursor: pointer; }
+      #result { min-height: 1.6em; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Create an account</h1>
+      <form id="registration">
+        <label for="name">Name</label>
+        <input id="name" name="name" autocomplete="name" maxlength="120" required>
+
+        <label for="email">Email</label>
+        <input id="email" name="email" type="email" autocomplete="email" maxlength="254" required>
+
+        <label for="password">Password</label>
+        <input id="password" name="password" type="password" autocomplete="new-password"
+          minlength="12" maxlength="72" required>
+        <small>Use at least 12 characters. Passwords may contain at most 72 UTF-8 bytes.</small>
+
+        <button type="submit">Register</button>
+      </form>
+      <p id="result" role="status" aria-live="polite"></p>
+      <p><a href="/login">Already registered? Log in</a></p>
+      <a href="/">Back to home</a>
+    </main>
+    <script>
+      const form = document.querySelector('#registration');
+      const result = document.querySelector('#result');
+
+      form.addEventListener('submit', async (event) => {
+        event.preventDefault();
+        result.textContent = 'Submitting…';
+        try {
+          const response = await fetch('/register', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(Object.fromEntries(new FormData(form))),
+          });
+          const payload = await response.json();
+          result.textContent = payload.message || payload.error || 'Registration failed.';
+          if (response.ok) {
+            form.reset();
+            result.innerHTML = 'Registration successful. <a href="/login">Log in</a>';
+          }
+        } catch {
+          result.textContent = 'Registration is temporarily unavailable.';
+        }
+      });
+    </script>
+  </body>
+</html>

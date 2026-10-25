@@ -1,0 +1,121 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec > >(tee -a /var/log/web-bootstrap.log | logger -t web-bootstrap -s 2>/dev/console) 2>&1
+export AWS_DEFAULT_REGION='${aws_region}'
+
+export DEBIAN_FRONTEND=noninteractive
+apt-get update
+apt-get install -y ca-certificates curl git nginx awscli mysql-client
+
+curl -fsSL https://deb.nodesource.com/setup_22.x | bash -
+apt-get install -y nodejs
+npm install --global pm2
+
+id nodeapp >/dev/null 2>&1 || useradd --system --create-home --home-dir /home/nodeapp --shell /usr/sbin/nologin nodeapp
+install -d -o nodeapp -g nodeapp -m 0755 /opt/nodeapp/releases /etc/nodeapp
+install -d -m 0755 /var/www/nodeapp
+
+cat > /etc/nginx/sites-available/nodeapp <<'NGINX'
+server {
+    listen 80 default_server;
+    listen [::]:80 default_server;
+    server_name _;
+
+    location / {
+        proxy_pass http://127.0.0.1:${application_port};
+        proxy_http_version 1.1;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+}
+NGINX
+rm -f /etc/nginx/sites-enabled/default
+ln -sfn /etc/nginx/sites-available/nodeapp /etc/nginx/sites-enabled/nodeapp
+
+cat > /etc/systemd/system/nodeapp.service <<'UNIT'
+[Unit]
+Description=Node.js application managed by PM2
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=nodeapp
+Group=nodeapp
+WorkingDirectory=/opt/nodeapp/current
+EnvironmentFile=/etc/nodeapp/app.env
+ExecStart=/usr/bin/pm2-runtime start server.js --name nodeapp
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
+UNIT
+
+cat > /usr/local/sbin/deploy-nodeapp <<'DEPLOY'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ARTIFACT_KEY="$${1:?Usage: deploy-nodeapp <versioned-s3-key>}"
+DB_HOST='${database_host}'
+DB_NAME='${database_name}'
+DB_USER='${database_user}'
+DB_SECRET_ARN='${database_secret_arn}'
+ARTIFACTS_BUCKET='${artifacts_bucket}'
+APP_PORT='${application_port}'
+export AWS_DEFAULT_REGION='${aws_region}'
+
+if [[ ! "$ARTIFACT_KEY" =~ ^releases/[A-Za-z0-9._/-]+\.tar\.gz$ ]]; then
+  echo "Invalid application artifact key."
+  exit 2
+fi
+
+RELEASE_DIR="/opt/nodeapp/releases/$(date -u +%Y%m%d%H%M%S)-$$"
+install -d -o nodeapp -g nodeapp -m 0755 "$RELEASE_DIR"
+aws s3 cp "s3://$ARTIFACTS_BUCKET/$ARTIFACT_KEY" "$RELEASE_DIR/app.tar.gz"
+tar -xzf "$RELEASE_DIR/app.tar.gz" -C "$RELEASE_DIR"
+rm "$RELEASE_DIR/app.tar.gz"
+
+if [[ ! -f "$RELEASE_DIR/package.json" || ! -f "$RELEASE_DIR/package-lock.json" || ! -f "$RELEASE_DIR/server.js" ]]; then
+  echo "Deployment artifact is missing required application files."
+  exit 1
+fi
+
+cd "$RELEASE_DIR"
+npm ci --omit=dev
+chown -R nodeapp:nodeapp "$RELEASE_DIR"
+
+SECRET_FILE="$(mktemp)"
+ENV_FILE="$(mktemp)"
+chmod 600 "$SECRET_FILE" "$ENV_FILE"
+trap 'rm -f "$SECRET_FILE" "$ENV_FILE"' EXIT
+aws secretsmanager get-secret-value --secret-id "$DB_SECRET_ARN" --query SecretString --output text > "$SECRET_FILE"
+DB_PASSWORD="$(python3 - "$SECRET_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as secret_file:
+    print(json.load(secret_file)["password"])
+PY
+)"
+
+{
+  printf 'HOST=127.0.0.1\nPORT=%s\n' "$APP_PORT"
+  printf 'DB_HOST=%s\nDB_PORT=3306\nDB_NAME=%s\nDB_USER=%s\n' "$DB_HOST" "$DB_NAME" "$DB_USER"
+  printf 'DB_PASSWORD=%s\n' "$DB_PASSWORD"
+} > "$ENV_FILE"
+install -o root -g root -m 0600 "$ENV_FILE" /etc/nodeapp/app.env
+ln -sfn "$RELEASE_DIR" /opt/nodeapp/current
+systemctl daemon-reload
+systemctl enable nodeapp nginx
+systemctl restart nginx
+systemctl restart nodeapp
+echo "Application deployment completed."
+DEPLOY
+chmod 0750 /usr/local/sbin/deploy-nodeapp
+
+systemctl daemon-reload
+systemctl enable nginx
+systemctl restart nginx

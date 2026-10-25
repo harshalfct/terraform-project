@@ -1,0 +1,160 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec > >(tee -a /var/log/mysql-bootstrap.log | logger -t mysql-bootstrap -s 2>/dev/console) 2>&1
+
+cat > /usr/local/sbin/bootstrap-mysql <<'BOOTSTRAP'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+exec 9>/run/mysql-bootstrap.lock
+flock 9
+
+SECRET_ARN='${secret_arn}'
+DATABASE_NAME='${database_name}'
+DATABASE_USER='${database_user}'
+ARTIFACTS_BUCKET='${artifacts_bucket}'
+PACKAGE_BUNDLE_KEY='${package_bundle_key}'
+export AWS_DEFAULT_REGION='${aws_region}'
+
+if ! command -v aws >/dev/null 2>&1; then
+  echo "AWS CLI is required to retrieve the database package and secret."
+  exit 1
+fi
+
+if ! command -v mysql >/dev/null 2>&1; then
+  if [[ -z "$PACKAGE_BUNDLE_KEY" ]] || ! aws s3api head-object \
+    --bucket "$ARTIFACTS_BUCKET" \
+    --key "$PACKAGE_BUNDLE_KEY" >/dev/null 2>&1; then
+    echo "MySQL is not installed and its S3 package bundle is not available yet."
+    exit 1
+  fi
+  install -d -m 0700 /var/tmp/mysql-packages
+  aws s3 cp "s3://$ARTIFACTS_BUCKET/$PACKAGE_BUNDLE_KEY" /var/tmp/mysql-packages/mysql-packages.tar.gz
+  tar -xzf /var/tmp/mysql-packages/mysql-packages.tar.gz -C /var/tmp/mysql-packages
+  apt-get install -y --no-download /var/tmp/mysql-packages/*.deb
+fi
+
+install -d -m 0755 /etc/mysql/mysql.conf.d
+CONFIG_FILE='/etc/mysql/mysql.conf.d/99-application-network.cnf'
+CONFIG_CHANGED=0
+CONFIG_TEMP="$(mktemp /etc/mysql/mysql.conf.d/99-application-network.XXXXXX)"
+cat > "$CONFIG_TEMP" <<'MYSQL_CONFIG'
+[mysqld]
+bind-address = 0.0.0.0
+MYSQL_CONFIG
+chmod 0644 "$CONFIG_TEMP"
+if ! cmp -s "$CONFIG_TEMP" "$CONFIG_FILE"; then
+  mv "$CONFIG_TEMP" "$CONFIG_FILE"
+  CONFIG_CHANGED=1
+else
+  rm -f "$CONFIG_TEMP"
+fi
+
+if ! systemctl is-active --quiet mysql; then
+  systemctl enable --now mysql
+elif [[ "$CONFIG_CHANGED" -eq 1 ]]; then
+  systemctl restart mysql
+fi
+systemctl enable mysql
+
+for attempt in $(seq 1 60); do
+  if mysqladmin ping --silent; then
+    break
+  fi
+  if [[ "$attempt" -eq 60 ]]; then
+    echo "MySQL did not become ready."
+    exit 1
+  fi
+  sleep 5
+done
+
+SECRET_FILE="$(mktemp)"
+VERSIONS_FILE="$(mktemp)"
+chmod 600 "$SECRET_FILE" "$VERSIONS_FILE"
+trap 'rm -f "$SECRET_FILE" "$VERSIONS_FILE"' EXIT
+
+aws secretsmanager describe-secret \
+  --secret-id "$SECRET_ARN" \
+  --query VersionIdsToStages \
+  --output json > "$VERSIONS_FILE"
+HAS_CURRENT_VERSION="$(python3 - "$VERSIONS_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as versions_file:
+    versions = json.load(versions_file) or {}
+print("1" if any("AWSCURRENT" in stages for stages in versions.values()) else "0")
+PY
+)"
+
+if [[ "$HAS_CURRENT_VERSION" == "1" ]]; then
+  aws secretsmanager get-secret-value \
+    --secret-id "$SECRET_ARN" \
+    --query SecretString \
+    --output text > "$SECRET_FILE"
+else
+  PASSWORD="$(openssl rand -hex 32)"
+  printf '{"username":"%s","password":"%s"}\n' "$DATABASE_USER" "$PASSWORD" > "$SECRET_FILE"
+  chmod 600 "$SECRET_FILE"
+  aws secretsmanager put-secret-value \
+    --secret-id "$SECRET_ARN" \
+    --secret-string "file://$SECRET_FILE" >/dev/null
+fi
+
+PASSWORD="$(python3 - "$SECRET_FILE" <<'PY'
+import json
+import sys
+
+with open(sys.argv[1], encoding="utf-8") as secret_file:
+    print(json.load(secret_file)["password"])
+PY
+)"
+
+mysql --protocol=socket <<SQL
+CREATE DATABASE IF NOT EXISTS \`$DATABASE_NAME\`;
+CREATE USER IF NOT EXISTS '$DATABASE_USER'@'%' IDENTIFIED BY '$PASSWORD';
+CREATE TABLE IF NOT EXISTS \`$DATABASE_NAME\`.users (
+  id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+  name VARCHAR(120) NOT NULL,
+  email VARCHAR(254) NOT NULL UNIQUE,
+  password_hash VARCHAR(255) NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+SET @password_hash_exists = (
+  SELECT COUNT(*)
+  FROM INFORMATION_SCHEMA.COLUMNS
+  WHERE TABLE_SCHEMA = '$DATABASE_NAME'
+    AND TABLE_NAME = 'users'
+    AND COLUMN_NAME = 'password_hash'
+);
+SET @password_hash_migration = IF(
+  @password_hash_exists = 0,
+  'ALTER TABLE users ADD COLUMN password_hash VARCHAR(255) NULL',
+  'SELECT 1'
+);
+PREPARE add_password_hash_column FROM @password_hash_migration;
+EXECUTE add_password_hash_column;
+DEALLOCATE PREPARE add_password_hash_column;
+CREATE TABLE IF NOT EXISTS \`$DATABASE_NAME\`.auth_sessions (
+  token_hash CHAR(64) NOT NULL PRIMARY KEY,
+  user_id BIGINT UNSIGNED NOT NULL,
+  expires_at DATETIME NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  INDEX idx_auth_sessions_expires_at (expires_at),
+  CONSTRAINT fk_auth_sessions_user
+    FOREIGN KEY (user_id) REFERENCES \`$DATABASE_NAME\`.users(id)
+    ON DELETE CASCADE
+);
+REVOKE ALL PRIVILEGES ON \`$DATABASE_NAME\`.* FROM '$DATABASE_USER'@'%';
+GRANT SELECT, INSERT ON \`$DATABASE_NAME\`.users TO '$DATABASE_USER'@'%';
+GRANT SELECT, INSERT, DELETE ON \`$DATABASE_NAME\`.auth_sessions TO '$DATABASE_USER'@'%';
+SQL
+
+echo "MySQL bootstrap completed."
+BOOTSTRAP
+chmod 0750 /usr/local/sbin/bootstrap-mysql
+
+if command -v mysql >/dev/null 2>&1; then
+  /usr/local/sbin/bootstrap-mysql || echo "Database bootstrap will be retried by the deployment pipeline."
+else
+  echo "MySQL package installation will be run by the deployment pipeline through the private S3 endpoint."
+fi

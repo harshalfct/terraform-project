@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Three-tier application</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 48rem; margin: 4rem auto; padding: 0 1.25rem; line-height: 1.6; }
+      main { border: 1px solid #8886; border-radius: 1rem; padding: 2rem; }
+      .status { font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Three-tier application</h1>
+      <p>Express.js is serving this page behind Nginx.</p>
+      <p>Application status: <span class="status" id="application">Checking…</span></p>
+      <p>Database connectivity: <span class="status" id="database">Checking…</span></p>
+      <p><a href="/register">Create an account</a> · <a href="/login">Log in</a> · <a href="/users">View users API</a></p>
+    </main>
+    <script>
+      fetch('/health')
+        .then(async (response) => {
+          const health = await response.json();
+          document.querySelector('#application').textContent = health.application;
+          document.querySelector('#database').textContent = health.database;
+        })
+        .catch(() => {
+          document.querySelector('#application').textContent = 'unavailable';
+          document.querySelector('#database').textContent = 'unavailable';
+        });
+    </script>
+  </body>
+</html>

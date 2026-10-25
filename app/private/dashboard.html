@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Your dashboard</title>
+    <style>
+      :root { color-scheme: light dark; font-family: system-ui, sans-serif; }
+      body { max-width: 48rem; margin: 4rem auto; padding: 0 1.25rem; line-height: 1.6; }
+      main { border: 1px solid #8886; border-radius: 1rem; padding: 2rem; }
+      button { padding: .7rem 1rem; font: inherit; cursor: pointer; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Your dashboard</h1>
+      <p>Welcome, <strong id="name">…</strong></p>
+      <p>Signed in as <span id="email">…</span></p>
+      <button id="logout" type="button">Log out</button>
+    </main>
+    <script>
+      async function loadAccount() {
+        const response = await fetch('/api/me');
+        if (response.status === 401) {
+          window.location.replace('/login');
+          return;
+        }
+        if (!response.ok) {
+          document.querySelector('#name').textContent = 'Account unavailable';
+          return;
+        }
+        const { user } = await response.json();
+        document.querySelector('#name').textContent = user.name;
+        document.querySelector('#email').textContent = user.email;
+      }
+
+      document.querySelector('#logout').addEventListener('click', async () => {
+        await fetch('/logout', { method: 'POST' });
+        window.location.replace('/login');
+      });
+      loadAccount().catch(() => {
+        document.querySelector('#name').textContent = 'Account unavailable';
+      });
+    </script>
+  </body>
+</html>

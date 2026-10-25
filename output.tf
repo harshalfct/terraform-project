@@ -28,6 +28,21 @@ output "private_subnet_id" {
   value       = module.networking.private_subnet_id
 }
 
+output "public_availability_zone" {
+  description = "Availability Zone containing the public subnet and NAT Gateway."
+  value       = module.networking.public_availability_zone
+}
+
+output "private_availability_zone" {
+  description = "Availability Zone containing the private database subnet."
+  value       = module.networking.private_availability_zone
+}
+
+output "nat_gateway_id" {
+  description = "NAT Gateway used for private subnet outbound internet access."
+  value       = module.networking.nat_gateway_id
+}
+
 output "database_private_ip" {
   description = "Private IPv4 address of the database instance."
   value       = module.database_server.private_ip
@@ -51,9 +66,4 @@ output "web_instance_id" {
 output "database_instance_id" {
   description = "Database instance ID used by the Jenkins readiness step."
   value       = module.database_server.instance_id
-}
-
-output "database_package_bundle_s3_key" {
-  description = "S3 object key used for offline MySQL package delivery."
-  value       = var.database_package_bundle_s3_key
 }

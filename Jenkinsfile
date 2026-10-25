@@ -9,13 +9,11 @@ pipeline {
   parameters {
     string(name: 'GIT_URL', defaultValue: '', description: 'Git repository URL.')
     string(name: 'GIT_BRANCH', defaultValue: 'main', description: 'Branch to deploy.')
-    string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS deployment region.')
+    string(name: 'AWS_REGION', defaultValue: 'ap-south-1', description: 'AWS deployment region.')
     string(name: 'TF_STATE_REGION', defaultValue: '', description: 'Optional region of the Terraform state bucket; defaults to AWS_REGION.')
     string(name: 'TF_STATE_BUCKET', defaultValue: '', description: 'Pre-created, encrypted S3 bucket for Terraform state.')
     string(name: 'TF_STATE_KEY', defaultValue: 'application/terraform.tfstate', description: 'State key; use a separate key from Jenkins infrastructure.')
     string(name: 'DATABASE_AMI_ID', defaultValue: '', description: 'Ubuntu 24.04 amd64 AMI with AWS CLI and SSM Agent.')
-    booleanParam(name: 'DATABASE_AMI_HAS_MYSQL', defaultValue: false, description: 'Enable only when DATABASE_AMI_ID already contains MySQL Server.')
-    string(name: 'MYSQL_PACKAGE_BUNDLE_PATH', defaultValue: '', description: 'Optional path on the Jenkins agent to a matching offline package bundle.')
     string(name: 'SSH_TRUSTED_CIDR', defaultValue: '', description: 'Optional trusted IPv4 CIDR for web-instance SSH.')
     string(name: 'KEY_PAIR_NAME', defaultValue: '', description: 'Optional existing EC2 key pair name.')
   }
@@ -25,7 +23,6 @@ pipeline {
     AWS_REGION = "${params.AWS_REGION}"
     TF_IN_AUTOMATION = 'true'
     TF_INPUT = 'false'
-    DATABASE_PACKAGE_KEY = 'bootstrap/mysql-packages.tar.gz'
   }
 
   stages {
@@ -41,20 +38,12 @@ pipeline {
           if (!params.DATABASE_AMI_ID?.trim()) {
             error('Set DATABASE_AMI_ID to a compatible Ubuntu 24.04 AMI with AWS CLI and SSM Agent.')
           }
-          if (!params.DATABASE_AMI_HAS_MYSQL && !params.MYSQL_PACKAGE_BUNDLE_PATH?.trim()) {
-            error('Provide MYSQL_PACKAGE_BUNDLE_PATH or use a DATABASE_AMI_ID with MySQL preinstalled.')
-          }
         }
         deleteDir()
         checkout([$class: 'GitSCM',
           branches: [[name: "*/${params.GIT_BRANCH}"]],
           userRemoteConfigs: [[url: params.GIT_URL, credentialsId: 'git-readonly']]
         ])
-        script {
-          if (params.MYSQL_PACKAGE_BUNDLE_PATH?.trim()) {
-            sh 'test -f "$MYSQL_PACKAGE_BUNDLE_PATH"'
-          }
-        }
       }
     }
 
@@ -97,8 +86,8 @@ pipeline {
       steps {
         withCredentials([[$class: 'AmazonWebServicesCredentialsBinding', credentialsId: 'aws-deploy']]) {
           sh '''
+            export TF_VAR_aws_region="$AWS_REGION"
             export TF_VAR_database_ami_id="$DATABASE_AMI_ID"
-            export TF_VAR_database_package_bundle_s3_key="$DATABASE_PACKAGE_KEY"
             export TF_VAR_ssh_trusted_cidr="$SSH_TRUSTED_CIDR"
             if [ -n "$KEY_PAIR_NAME" ]; then
               export TF_VAR_key_pair_name="$KEY_PAIR_NAME"
@@ -133,13 +122,8 @@ pipeline {
             BUCKET="$(terraform output -raw deployment_bucket)"
             DB_INSTANCE="$(terraform output -raw database_instance_id)"
             WEB_INSTANCE="$(terraform output -raw web_instance_id)"
-            PACKAGE_KEY="$(terraform output -raw database_package_bundle_s3_key)"
             SHORT_COMMIT="$(git rev-parse --short=12 HEAD)"
             ARTIFACT_KEY="releases/${BUILD_NUMBER}-${SHORT_COMMIT}.tar.gz"
-
-            if [ -n "$MYSQL_PACKAGE_BUNDLE_PATH" ]; then
-              aws s3 cp "$MYSQL_PACKAGE_BUNDLE_PATH" "s3://${BUCKET}/${PACKAGE_KEY}"
-            fi
 
             bash scripts/ssm-run.sh "$DB_INSTANCE" "sudo /usr/local/sbin/bootstrap-mysql"
 

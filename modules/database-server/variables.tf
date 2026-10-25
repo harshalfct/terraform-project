@@ -33,16 +33,6 @@ variable "secret_arn" {
   description = "Secrets Manager secret ARN."
 }
 
-variable "artifacts_bucket" {
-  type        = string
-  description = "Private S3 bucket used for package delivery."
-}
-
-variable "package_bundle_key" {
-  type        = string
-  description = "Optional S3 key containing MySQL packages."
-}
-
 variable "database_name" {
   type        = string
   description = "Application database name."

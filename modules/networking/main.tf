@@ -1,7 +1,3 @@
-data "aws_availability_zones" "available" {
-  state = "available"
-}
-
 resource "aws_vpc" "this" {
   cidr_block           = var.vpc_cidr
   enable_dns_hostnames = true
@@ -17,7 +13,7 @@ resource "aws_internet_gateway" "this" {
 resource "aws_subnet" "public" {
   vpc_id                  = aws_vpc.this.id
   cidr_block              = var.public_subnet_cidr
-  availability_zone       = data.aws_availability_zones.available.names[0]
+  availability_zone       = var.public_availability_zone
   map_public_ip_on_launch = true
   tags                    = merge(var.tags, { Name = "${var.project_name}-public" })
 }
@@ -25,9 +21,22 @@ resource "aws_subnet" "public" {
 resource "aws_subnet" "private" {
   vpc_id                  = aws_vpc.this.id
   cidr_block              = var.private_subnet_cidr
-  availability_zone       = data.aws_availability_zones.available.names[0]
+  availability_zone       = var.private_availability_zone
   map_public_ip_on_launch = false
   tags                    = merge(var.tags, { Name = "${var.project_name}-private" })
+}
+
+resource "aws_eip" "nat" {
+  domain = "vpc"
+  tags   = merge(var.tags, { Name = "${var.project_name}-nat" })
+}
+
+resource "aws_nat_gateway" "this" {
+  allocation_id = aws_eip.nat.id
+  subnet_id     = aws_subnet.public.id
+  tags          = merge(var.tags, { Name = "${var.project_name}-nat" })
+
+  depends_on = [aws_route_table_association.public]
 }
 
 resource "aws_route_table" "public" {
@@ -51,17 +60,15 @@ resource "aws_route_table" "private" {
   tags   = merge(var.tags, { Name = "${var.project_name}-private" })
 }
 
+resource "aws_route" "private_nat" {
+  route_table_id         = aws_route_table.private.id
+  destination_cidr_block = "0.0.0.0/0"
+  nat_gateway_id         = aws_nat_gateway.this.id
+}
+
 resource "aws_route_table_association" "private" {
   subnet_id      = aws_subnet.private.id
   route_table_id = aws_route_table.private.id
-}
-
-resource "aws_vpc_endpoint" "s3" {
-  vpc_id            = aws_vpc.this.id
-  service_name      = "com.amazonaws.${data.aws_region.current.name}.s3"
-  vpc_endpoint_type = "Gateway"
-  route_table_ids   = [aws_route_table.private.id]
-  tags              = merge(var.tags, { Name = "${var.project_name}-s3" })
 }
 
 data "aws_region" "current" {}
@@ -147,10 +154,19 @@ resource "aws_vpc_security_group_ingress_rule" "database_mysql" {
   to_port                      = 3306
 }
 
-resource "aws_vpc_security_group_egress_rule" "database_s3" {
+resource "aws_vpc_security_group_egress_rule" "database_http" {
   security_group_id = aws_security_group.database.id
-  description       = "HTTPS to S3 through the private S3 gateway endpoint."
-  prefix_list_id    = aws_vpc_endpoint.s3.prefix_list_id
+  description       = "HTTP package repository access through the NAT Gateway."
+  cidr_ipv4         = "0.0.0.0/0"
+  from_port         = 80
+  ip_protocol       = "tcp"
+  to_port           = 80
+}
+
+resource "aws_vpc_security_group_egress_rule" "database_https" {
+  security_group_id = aws_security_group.database.id
+  description       = "HTTPS package repository access through the NAT Gateway."
+  cidr_ipv4         = "0.0.0.0/0"
   from_port         = 443
   ip_protocol       = "tcp"
   to_port           = 443

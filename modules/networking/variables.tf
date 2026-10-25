@@ -18,6 +18,16 @@ variable "private_subnet_cidr" {
   description = "Private subnet IPv4 CIDR."
 }
 
+variable "public_availability_zone" {
+  type        = string
+  description = "Availability Zone for the public subnet and NAT Gateway."
+}
+
+variable "private_availability_zone" {
+  type        = string
+  description = "Availability Zone for the private subnet."
+}
+
 variable "ssh_trusted_cidr" {
   type        = string
   description = "Optional trusted IPv4 CIDR for SSH."

@@ -28,11 +28,6 @@ resource "aws_iam_role_policy" "bootstrap" {
         Effect   = "Allow"
         Action   = ["secretsmanager:DescribeSecret", "secretsmanager:GetSecretValue", "secretsmanager:PutSecretValue"]
         Resource = var.secret_arn
-      },
-      {
-        Effect   = "Allow"
-        Action   = ["s3:GetObject"]
-        Resource = "arn:aws:s3:::${var.artifacts_bucket}/${var.package_bundle_key}"
       }
     ]
   })
@@ -53,12 +48,10 @@ resource "aws_instance" "this" {
   associate_public_ip_address = false
   user_data_replace_on_change = false
   user_data = templatefile("${path.module}/templates/mysql-bootstrap.sh.tftpl", {
-    aws_region         = var.aws_region
-    secret_arn         = var.secret_arn
-    database_name      = var.database_name
-    database_user      = var.database_user
-    artifacts_bucket   = var.artifacts_bucket
-    package_bundle_key = var.package_bundle_key
+    aws_region    = var.aws_region
+    secret_arn    = var.secret_arn
+    database_name = var.database_name
+    database_user = var.database_user
   })
 
   root_block_device {

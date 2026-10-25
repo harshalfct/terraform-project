@@ -8,12 +8,14 @@ locals {
 module "networking" {
   source = "./modules/networking"
 
-  project_name        = var.project_name
-  vpc_cidr            = var.vpc_cidr
-  public_subnet_cidr  = var.public_subnet_cidr
-  private_subnet_cidr = var.private_subnet_cidr
-  ssh_trusted_cidr    = var.ssh_trusted_cidr
-  tags                = local.common_tags
+  project_name              = var.project_name
+  vpc_cidr                  = var.vpc_cidr
+  public_subnet_cidr        = var.public_subnet_cidr
+  private_subnet_cidr       = var.private_subnet_cidr
+  public_availability_zone  = var.public_availability_zone
+  private_availability_zone = var.private_availability_zone
+  ssh_trusted_cidr          = var.ssh_trusted_cidr
+  tags                      = local.common_tags
 }
 
 resource "aws_s3_bucket" "deployment_artifacts" {
@@ -66,18 +68,16 @@ resource "aws_secretsmanager_secret" "database" {
 module "database_server" {
   source = "./modules/database-server"
 
-  project_name       = var.project_name
-  aws_region         = var.aws_region
-  ami_id             = var.database_ami_id
-  instance_type      = var.database_instance_type
-  subnet_id          = module.networking.private_subnet_id
-  security_group_id  = module.networking.database_security_group_id
-  secret_arn         = aws_secretsmanager_secret.database.arn
-  artifacts_bucket   = aws_s3_bucket.deployment_artifacts.id
-  package_bundle_key = var.database_package_bundle_s3_key
-  database_name      = var.application_database_name
-  database_user      = var.application_database_user
-  tags               = local.common_tags
+  project_name      = var.project_name
+  aws_region        = var.aws_region
+  ami_id            = var.database_ami_id
+  instance_type     = var.database_instance_type
+  subnet_id         = module.networking.private_subnet_id
+  security_group_id = module.networking.database_security_group_id
+  secret_arn        = aws_secretsmanager_secret.database.arn
+  database_name     = var.application_database_name
+  database_user     = var.application_database_user
+  tags              = local.common_tags
 
   depends_on = [module.networking, aws_s3_bucket_public_access_block.deployment_artifacts]
 }

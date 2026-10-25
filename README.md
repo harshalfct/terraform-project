@@ -1,14 +1,14 @@
 # Three-tier Node.js and MySQL deployment
 
-This workspace contains a Terraform-managed AWS application stack and a Jenkins deployment pipeline. The active workspace was empty when work began, so this is a new scaffold rather than an in-place modification of existing Terraform or memory files.
+This workspace contains a Terraform-managed AWS application stack and a Jenkins deployment pipeline.
 
 ## Architecture
 
-- One VPC with one public subnet and one private subnet in a single Availability Zone.
-- The public subnet contains only the web EC2 instance. Nginx accepts HTTP on port 80 and proxies to Express on `127.0.0.1:3000`; the Node port is not exposed by the security group.
-- The private subnet contains only the MySQL EC2 instance. It has no public IP, no default internet route, and MySQL TCP 3306 is allowed only from the web security group.
-- An Internet Gateway provides the public subnet route. There is no NAT Gateway, load balancer, or extra subnet.
-- S3 gateway and private interface endpoints provide the private DB instance with access to the deployment bucket, Secrets Manager, and Systems Manager without internet egress. Interface endpoints incur AWS charges.
+- One VPC in `ap-south-1` with exactly two subnets: a public web/NAT subnet in `ap-south-1a` and a private database subnet in `ap-south-1b`.
+- The public subnet hosts the web EC2 instance and NAT Gateway. Nginx accepts HTTP on port 80 and proxies to Express on `127.0.0.1:3000`; the Node port is not exposed by the security group.
+- The private subnet contains only the MySQL EC2 instance. It has no public IP, and MySQL TCP 3306 is allowed only from the web security group.
+- An Internet Gateway provides public subnet internet access. One NAT Gateway in `ap-south-1a` provides private subnet egress for MySQL package installation and updates. Traffic from the private subnet in `ap-south-1b` crosses Availability Zones and incurs NAT and cross-AZ charges; the single NAT Gateway is not highly available.
+- Private interface endpoints provide the DB instance access to Secrets Manager and Systems Manager. These endpoints also incur AWS charges.
 - Jenkins stays outside this application Terraform state and is not created, updated, or destroyed by this pipeline. `modules/jenkins-server/` documents that state boundary.
 
 The initial deployment uses HTTP. HTTPS requires a domain and certificate configuration and is intentionally not included.
@@ -18,7 +18,7 @@ The initial deployment uses HTTP. HTTPS requires a domain and certificate config
 ```text
 .
 ├── Jenkinsfile                 # CI/CD pipeline and deployment stages
-├── .gitignore                  # Ignores local secrets and generated files
+├── .gitignore                  # Ignores local secrets, memory, and generated files
 ├── terraform.tf                # Terraform version, AWS provider, and S3 backend
 ├── provider.tf                 # AWS provider and Ubuntu web AMI lookup
 ├── main.tf                     # Root resources and module wiring
@@ -26,7 +26,6 @@ The initial deployment uses HTTP. HTTPS requires a domain and certificate config
 ├── output.tf                   # Deployment and infrastructure outputs
 ├── .terraform.lock.hcl         # Locked Terraform provider selections
 ├── app/
-│   ├── .env                     # Local-only configuration; ignored by Git
 │   ├── package.json             # Runtime dependencies and npm scripts
 │   ├── package-lock.json        # Reproducible npm dependency lock
 │   ├── server.js                # Express API, health checks, and auth sessions
@@ -39,7 +38,7 @@ The initial deployment uses HTTP. HTTPS requires a domain and certificate config
 │       └── dashboard.html       # Authenticated dashboard
 ├── modules/
 │   ├── networking/
-│   │   ├── main.tf              # VPC, subnets, routes, endpoints, and security groups
+│   │   ├── main.tf              # VPC, two subnets, NAT, endpoints, routes, and security groups
 │   │   ├── variables.tf
 │   │   └── outputs.tf
 │   ├── web-server/
@@ -57,14 +56,7 @@ The initial deployment uses HTTP. HTTPS requires a domain and certificate config
 │   └── jenkins-server/
 │       └── README.md            # Separate Jenkins state boundary
 ├── scripts/
-│   ├── build-mysql-package-bundle.sh
 │   └── ssm-run.sh
-└── memory/
-    ├── ARCHITECTURE.md
-    ├── DECISIONS.md
-    ├── NEXT_STEPS.md
-    ├── PROGRESS.md
-    └── PROJECT_CONTEXT.md
 ```
 
 The local `.terraform/` and `app/node_modules/` directories are generated dependencies and are not part of the project source structure.
@@ -101,22 +93,13 @@ node --env-file=.env server.js
 
 Visit `http://127.0.0.1:3000/`, `/register`, `/login`, and `/health`. The app needs an `auth_sessions` table for login; the Terraform bootstrap creates it automatically in deployed environments. Locally, create it once with a foreign key from `user_id` to `users.id`, and do not run destructive database initialization during app updates. Without working DB settings, the app reports the database as unavailable and `/health` returns HTTP 503.
 
-## Private MySQL package bootstrap
+## Private MySQL installation
 
-A private subnet without NAT cannot download packages from Ubuntu's public repositories. The deployment preserves the no-NAT requirement by using one of these package sources:
+Provide an Ubuntu 24.04 amd64 database AMI with AWS CLI, Python 3, OpenSSL, and a working SSM Agent. Set its ID in `DATABASE_AMI_ID`. If MySQL is not already installed, the `/usr/local/sbin/bootstrap-mysql` script uses the NAT Gateway to run `apt-get update` and install `mysql-server`. The instance remains private with no public IP; its security group allows outbound HTTP/HTTPS for package repositories and limits MySQL ingress to the web security group.
 
-1. Provide an Ubuntu 24.04 amd64 database AMI with AWS CLI, Python 3, OpenSSL, and a working SSM Agent. Set its ID in `DATABASE_AMI_ID`. If MySQL Server is already installed in the AMI, set `DATABASE_AMI_HAS_MYSQL=true`.
-2. Otherwise, build an offline Ubuntu 24.04 amd64 MySQL and AWS CLI package bundle on a matching Ubuntu host or Jenkins agent, then make it available to the pipeline:
+The bootstrap starts MySQL, binds it to the instance's private network interfaces, creates the database and least-privilege application account if absent, and idempotently creates `users` and `auth_sessions`. The pipeline invokes this script using SSM before deploying the app.
 
-   ```sh
-   sudo bash scripts/build-mysql-package-bundle.sh
-   ```
-
-   Set `MYSQL_PACKAGE_BUNDLE_PATH` to the bundle's path on the Jenkins agent. The database bootstrap script installs these packages without internet access. The bundle must match the database image's Ubuntu release and architecture.
-
-The dedicated `/usr/local/sbin/bootstrap-mysql` script is installed on first boot. It starts MySQL, binds to the instance's private network interfaces (security-group restricted), creates the database and least-privilege application account if absent, and idempotently creates `users` and `auth_sessions`. The pipeline uploads an optional package bundle to the private S3 bucket and invokes this script using SSM before deploying the app.
-
-The DB bootstrap generates a random password only when the Secrets Manager secret has no version, writes it to Secrets Manager, and reuses that value on subsequent runs. The password is not supplied as a Terraform variable, embedded in source, or printed by the pipeline. The DB EC2 role can read/write only this secret and read deployment-bucket objects; the web EC2 role can read that secret and deployment objects. MySQL application credentials are not stored in Terraform state.
+The DB bootstrap generates a random password only when the Secrets Manager secret has no version, writes it to Secrets Manager, and reuses that value on subsequent runs. The password is not supplied as a Terraform variable, embedded in source, or printed by the pipeline. The DB EC2 role can read/write only this secret; the web EC2 role can read that secret and deployment objects. MySQL application credentials are not stored in Terraform state.
 
 ## Jenkins prerequisites
 
@@ -127,7 +110,7 @@ Configure the Jenkins agent with:
 - Jenkins credential ID `aws-deploy` of the AWS credentials type, scoped to the target account and region. The role/user needs the Terraform resource permissions, narrowly scoped `iam:PassRole`, access to the state and deployment buckets, and SSM send/read-command permissions.
 - Jenkins Git credential ID `git-readonly` with read-only access to the application repository.
 - A pre-created S3 state bucket with encryption and versioning. Each application environment must use its own state key. The S3 backend uses native lock files; Jenkins also serializes applies for a state key.
-- A compatible Ubuntu 24.04 database AMI and either preinstalled MySQL or the offline package bundle described above.
+- A compatible Ubuntu 24.04 amd64 database AMI with AWS CLI, Python 3, OpenSSL, and SSM Agent. MySQL may be preinstalled or installed through the NAT Gateway.
 
 Keep the Jenkins server and its own state separate. The application job must not run `terraform destroy`; the pipeline contains no destroy stage. The Terraform database instance, secret, and artifact bucket have deletion protection.
 
@@ -138,7 +121,7 @@ Create a Jenkins Pipeline job using this repository's `Jenkinsfile`. Supply:
 - `GIT_URL` and `GIT_BRANCH`; checkout uses the Jenkins `git-readonly` credential.
 - `AWS_REGION`, `TF_STATE_BUCKET`, and a unique `TF_STATE_KEY`.
 - `TF_STATE_REGION` only when the state bucket is in a different AWS region; otherwise it defaults to `AWS_REGION`.
-- `DATABASE_AMI_ID` and either `DATABASE_AMI_HAS_MYSQL` or a matching `MYSQL_PACKAGE_BUNDLE_PATH`.
+- `DATABASE_AMI_ID` for the compatible Ubuntu 24.04 amd64 database AMI.
 - Optional `SSH_TRUSTED_CIDR` and `KEY_PAIR_NAME`. SSH ingress is disabled when no trusted CIDR is set.
 
 The job checks out source, installs app dependencies, and runs tests before checking Terraform formatting, initializing and validating Terraform, creating a saved plan, waiting for manual approval, and applying that reviewed plan. After apply, it bootstraps the private database through SSM, uploads a versioned app archive to S3, deploys it through SSM, and retries the public `/health` check. It fails if the app or database health check does not pass. It prints the URL as successful only after a passing HTTP health check.
@@ -152,7 +135,7 @@ terraform fmt -check -recursive
 terraform init \
   -backend-config="bucket=YOUR_STATE_BUCKET" \
   -backend-config="key=application/terraform.tfstate" \
-  -backend-config="region=us-east-1" \
+  -backend-config="region=ap-south-1" \
   -backend-config="encrypt=true" \
   -backend-config="use_lockfile=true"
 terraform validate

@@ -18,6 +18,14 @@ output "database_security_group_id" {
   value = aws_security_group.database.id
 }
 
-output "availability_zone" {
+output "public_availability_zone" {
+  value = aws_subnet.public.availability_zone
+}
+
+output "private_availability_zone" {
   value = aws_subnet.private.availability_zone
+}
+
+output "nat_gateway_id" {
+  value = aws_nat_gateway.this.id
 }

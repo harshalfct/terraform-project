@@ -1,7 +1,7 @@
 variable "aws_region" {
   description = "AWS region for the application infrastructure."
   type        = string
-  default     = "us-east-1"
+  default     = "ap-south-1"
 }
 
 variable "project_name" {
@@ -31,6 +31,18 @@ variable "private_subnet_cidr" {
   description = "IPv4 CIDR for the private database subnet."
   type        = string
   default     = "10.20.2.0/24"
+}
+
+variable "public_availability_zone" {
+  description = "Availability Zone for the public web subnet and NAT Gateway."
+  type        = string
+  default     = "ap-south-1a"
+}
+
+variable "private_availability_zone" {
+  description = "Availability Zone for the private database subnet."
+  type        = string
+  default     = "ap-south-1b"
 }
 
 variable "ssh_trusted_cidr" {
@@ -97,12 +109,6 @@ variable "application_database_user" {
 }
 
 variable "database_ami_id" {
-  description = "Ubuntu 24.04 amd64 AMI with AWS CLI and SSM Agent available; MySQL may be preinstalled or delivered as an offline bundle."
+  description = "Ubuntu 24.04 amd64 AMI with AWS CLI, Python 3, OpenSSL, and SSM Agent; MySQL is installed through the NAT Gateway."
   type        = string
-}
-
-variable "database_package_bundle_s3_key" {
-  description = "S3 key for a matching Ubuntu 24.04 MySQL package bundle, used when the DB AMI does not include MySQL."
-  type        = string
-  default     = "bootstrap/mysql-packages.tar.gz"
 }

@@ -130,6 +130,7 @@ sudo apt update
 sudo apt install jenkins
 ```
 
+
 ### 2.4 Complete the first-time setup
 
 1. Open `http://JENKINS_SERVER_ADDRESS:8080` from an allowed network.

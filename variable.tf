@@ -33,18 +33,6 @@ variable "private_subnet_cidr" {
   default     = "10.20.2.0/24"
 }
 
-variable "public_availability_zone" {
-  description = "Availability Zone for the public web subnet and NAT Gateway."
-  type        = string
-  default     = "ap-south-1a"
-}
-
-variable "private_availability_zone" {
-  description = "Availability Zone for the private database subnet."
-  type        = string
-  default     = "ap-south-1b"
-}
-
 variable "ssh_trusted_cidr" {
   description = "Optional trusted IPv4 CIDR allowed to SSH to the web instance. Empty disables SSH."
   type        = string
@@ -111,4 +99,9 @@ variable "application_database_user" {
 variable "database_ami_id" {
   description = "Ubuntu 24.04 amd64 AMI with AWS CLI, Python 3, OpenSSL, and SSM Agent; MySQL is installed through the NAT Gateway."
   type        = string
+
+  validation {
+    condition     = can(regex("^ami-[0-9a-f]+$", var.database_ami_id))
+    error_message = "database_ami_id must be an AWS AMI ID such as ami-0123456789abcdef0."
+  }
 }

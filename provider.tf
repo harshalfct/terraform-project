@@ -21,3 +21,7 @@ data "aws_ami" "ubuntu_2404" {
     values = ["hvm"]
   }
 }
+
+data "aws_availability_zones" "available" {
+  state = "available"
+}

@@ -4,10 +4,10 @@ This workspace contains a Terraform-managed AWS application stack and a Jenkins 
 
 ## Architecture
 
-- One VPC in `ap-south-1` with exactly two subnets: a public web/NAT subnet in `ap-south-1a` and a private database subnet in `ap-south-1b`.
+- One VPC in the configured AWS region with exactly two subnets: a public web/NAT subnet and a private database subnet. Terraform automatically selects the first two available Availability Zones in that region.
 - The public subnet hosts the web EC2 instance and NAT Gateway. Nginx accepts HTTP on port 80 and proxies to Express on `127.0.0.1:3000`; the Node port is not exposed by the security group.
 - The private subnet contains only the MySQL EC2 instance. It has no public IP, and MySQL TCP 3306 is allowed only from the web security group.
-- An Internet Gateway provides public subnet internet access. One NAT Gateway in `ap-south-1a` provides private subnet egress for MySQL package installation and updates. Traffic from the private subnet in `ap-south-1b` crosses Availability Zones and incurs NAT and cross-AZ charges; the single NAT Gateway is not highly available.
+- An Internet Gateway provides public subnet internet access. One NAT Gateway in the public subnet's Availability Zone provides private subnet egress for MySQL package installation and updates. Private-subnet traffic crosses Availability Zones and incurs NAT and cross-AZ charges; the single NAT Gateway is not highly available.
 - Private interface endpoints provide the DB instance access to Secrets Manager and Systems Manager. These endpoints also incur AWS charges.
 - Jenkins stays outside this application Terraform state and is not created, updated, or destroyed by this pipeline. `modules/jenkins-server/` documents that state boundary.
 
@@ -107,7 +107,7 @@ Configure the Jenkins agent with:
 
 - Terraform 1.10 or later, AWS CLI, Node.js 22/npm, Python 3, `curl`, `tar`, and Bash.
 - Pipeline, Git, Credentials Binding, AWS Credentials Binding, and Lockable Resources plugins.
-- Jenkins credential ID `aws-deploy` of the AWS credentials type, scoped to the target account and region. The role/user needs the Terraform resource permissions, narrowly scoped `iam:PassRole`, access to the state and deployment buckets, and SSM send/read-command permissions.
+- Jenkins credential ID `aws-deploy` of the AWS credentials type, scoped to the target account and region. The role/user needs the Terraform resource permissions (including `ec2:DescribeAvailabilityZones`), narrowly scoped `iam:PassRole`, access to the state and deployment buckets, and SSM send/read-command permissions.
 - Jenkins Git credential ID `git-readonly` with read-only access to the application repository.
 - A pre-created S3 state bucket with encryption and versioning. Each application environment must use its own state key. The S3 backend uses native lock files; Jenkins also serializes applies for a state key.
 - A compatible Ubuntu 24.04 amd64 database AMI with AWS CLI, Python 3, OpenSSL, and SSM Agent. MySQL may be preinstalled or installed through the NAT Gateway.
@@ -119,14 +119,26 @@ Keep the Jenkins server and its own state separate. The application job must not
 Create a Jenkins Pipeline job using this repository's `Jenkinsfile`. Supply:
 
 - `GIT_URL` and `GIT_BRANCH`; checkout uses the Jenkins `git-readonly` credential.
-- `AWS_REGION`, `TF_STATE_BUCKET`, and a unique `TF_STATE_KEY`.
+- `AWS_REGION`, `TF_STATE_BUCKET`, and a unique `TF_STATE_KEY`. `AWS_REGION` determines the region and the two available Availability Zones used by the application subnets.
 - `TF_STATE_REGION` only when the state bucket is in a different AWS region; otherwise it defaults to `AWS_REGION`.
 - `DATABASE_AMI_ID` for the compatible Ubuntu 24.04 amd64 database AMI.
 - Optional `SSH_TRUSTED_CIDR` and `KEY_PAIR_NAME`. SSH ingress is disabled when no trusted CIDR is set.
 
-The job checks out source, installs app dependencies, and runs tests before checking Terraform formatting, initializing and validating Terraform, creating a saved plan, waiting for manual approval, and applying that reviewed plan. After apply, it bootstraps the private database through SSM, uploads a versioned app archive to S3, deploys it through SSM, and retries the public `/health` check. It fails if the app or database health check does not pass. It prints the URL as successful only after a passing HTTP health check.
+`DATABASE_AMI_ID` is the only required Terraform application variable without a Terraform default. The pipeline supplies it, along with `AWS_REGION`, to `terraform plan`. Other settings use the defaults in `variable.tf`; the subnet Availability Zones are discovered for the selected region rather than being fixed to `ap-south-1`.
 
-Application dependencies and tests run immediately after checkout, before Terraform plan or apply. A failed application test therefore stops the job before any infrastructure changes. This repository has not been connected to a Jenkins server or AWS account; run Jenkins only after local tests pass and the required deployment prerequisites are configured. The pipeline pauses for explicit approval before applying its reviewed Terraform plan.
+Each pipeline stage and command prints its purpose to the Jenkins log:
+
+| Stage | Commands | What it does |
+|---|---|---|
+| Checkout and check inputs | `deleteDir()`, `checkout` | Checks required job parameters, clears old workspace files, and checks out the requested Git branch. |
+| Test the application | `node --version`, `npm ci`, `npm test` | Requires Node.js 22, installs locked dependencies, and stops before infrastructure changes if app tests fail. |
+| Check and initialize Terraform | `terraform fmt -check -recursive`, `terraform init`, `terraform validate` | Checks formatting, configures the encrypted S3 state backend and lock file, then validates Terraform and its module inputs. |
+| Plan and approve infrastructure | `terraform plan -out=tfplan`, Jenkins `input` | Creates a saved plan and waits for a person to review and approve it. |
+| Apply reviewed infrastructure plan | `terraform apply tfplan` | Applies only the approved plan while holding the Jenkins state-specific lock. |
+| Deploy application | `scripts/ssm-run.sh`, `tar`, `aws s3 cp` | Initializes MySQL, packages and uploads the app without `.env` or `node_modules`, then deploys it to the web instance using SSM. |
+| Verify and report deployment | `terraform output`, `curl /health` | Reads the public URL, retries the health check for up to five minutes, and reports the URL only after HTTP 200. The app returns HTTP 200 only when its database check succeeds. |
+
+This repository has not been connected to a Jenkins server or AWS account. Run the pipeline only after the Jenkins agent, credentials, state bucket, and database AMI prerequisites are configured. The pipeline pauses for explicit approval before applying the reviewed Terraform plan.
 
 Manual Terraform validation (requires Terraform and a pre-existing backend bucket):
 

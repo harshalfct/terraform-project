@@ -12,8 +12,8 @@ module "networking" {
   vpc_cidr                  = var.vpc_cidr
   public_subnet_cidr        = var.public_subnet_cidr
   private_subnet_cidr       = var.private_subnet_cidr
-  public_availability_zone  = var.public_availability_zone
-  private_availability_zone = var.private_availability_zone
+  public_availability_zone  = data.aws_availability_zones.available.names[0]
+  private_availability_zone = data.aws_availability_zones.available.names[1]
   ssh_trusted_cidr          = var.ssh_trusted_cidr
   tags                      = local.common_tags
 }

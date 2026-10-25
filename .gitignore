@@ -1,0 +1,16 @@
+.terraform/
+*.tfstate
+*.tfstate.*
+tfplan
+crash.log
+app/node_modules/
+app/private/*
+!app/private/dashboard.html
+app/.env
+app/.env.*
+app.tar.gz
+mysql-packages.tar.gz
+.memory/
+memory/
+.terraform.lock.hcl
+.gitignore
